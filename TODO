@@ -1,0 +1,32 @@
+- !!! COME UP WITH A GIT COMMIT MESSAGE NAMING SCHEME THAT MAKES POTENTIAL UPSTREAM CONFLICTS EXPLICIT !!!
+
+- CORE INFRA:
+  - [ ] Add test-framework-harness that not only builds a feature-matrix but then also tests it against a list of tests
+
+  - [ ] Properly fix "display-is-ip" impl and wire up the checks to it
+
+  - [ ] FIX nrxvt building without lua: With -Dlua=disabled, existing code
+    still calls HOOK_INVOKE(...) and SHOULD_INVOKE(...), but neither macro is
+    defined. Compilation therefore fails at existing hook call sites, including
+    src/init.cpp.
+
+    Your normal Lua-enabled build passes. The fix is two no-op macro
+    definitions for builds without Lua or Perl.
+
+- CORE FEATURES:
+  - [ ] Speed up drag scrolling up/down
+  - [ ] Add improved text selection
+  - [ ] Allow changing color of text selection
+  - [ ] Add option to only scroll down to prompt when not pressing typing keys (a-zA-Z0-9<SPC><TAB>), but also things like <C-a>/<C-e>/<C-w>/<C-u> or something (configurable !!)
+
+- CORE OPTIMIZATIONS:
+  - [ ] SIMD
+
+- CORE LUA API:
+  - [ ] Refactor/Simplify/Optimize input system (pending proposal)
+  - [ ] Refactor/Simplify/Optimize lua pty API (pending proposal)
+  - [ ] Consider lua line anchor identities
+
+- LUA EXAMPLES:
+
+# vim: set expandtab tabstop=2 shiftwidth=2 softtabstop=2 nowrap textwidth=0:
