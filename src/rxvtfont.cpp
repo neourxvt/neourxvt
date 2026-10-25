@@ -254,6 +254,13 @@ rxvt_font::clear_rect (rxvt_drawable &d, int x, int y, int w, int h, int color) 
         }
       else
 # endif
+      if (term->pix_colors[color].is_opaque ())
+        {
+          // Opaque cell backgrounds only need a core fill, without blending.
+          XSetForeground (disp, gc, term->pix_colors[color]);
+          XFillRectangle (disp, d, gc, x, y, w, h);
+        }
+      else
         XftDrawRect (d, &term->pix_colors[color].c, x, y, w, h);
 
 #else
