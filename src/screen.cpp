@@ -2536,9 +2536,11 @@ rxvt_term::scr_refresh () noexcept
 
   // Publish only after glyphs, decorations, cursor and refresh hooks finish.
   batch_pending = false;
-  last_present = ev::now ();
   if (frame)
     scr_present (0, 0, frame_width, frame_height);
+  // Drawing can block on X11. Start the next frame interval after that work,
+  // rather than using the event loop's timestamp from before the draw.
+  last_present = ev_time ();
 }
 
 void ecb_cold
