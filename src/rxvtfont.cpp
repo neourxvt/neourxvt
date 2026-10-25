@@ -1152,6 +1152,8 @@ struct rxvt_font_xft : rxvt_font
   enum { char_cache_min = 0x20, char_cache_max = 0x7e };
   uint8_t xoff_cache  [char_cache_max - char_cache_min + 1];
   FT_UInt glyph_cache [char_cache_max - char_cache_min + 1];
+  // Bounds relative to the baseline let ordinary ASCII avoid row clipping.
+  int char_cache_ascent, char_cache_descent;
 #endif
 
   rxvt_font_xft ()
@@ -1360,6 +1362,7 @@ rxvt_font_xft::load (const rxvt_fontprop &prop, bool force_prop)
 
 #if XFT_CHAR_CACHE
   // populate char cache
+  char_cache_ascent = char_cache_descent = 0;
   for (FcChar16 ch = char_cache_min; ch <= char_cache_max; ++ch)
     {
       FT_UInt glyph = XftCharIndex (disp, f, ch);
@@ -1368,6 +1371,8 @@ rxvt_font_xft::load (const rxvt_fontprop &prop, bool force_prop)
       XGlyphInfo g;
       XftGlyphExtents (disp, f, &glyph, 1, &g);
       xoff_cache [ch - char_cache_min] = g.xOff;
+      max_it (char_cache_ascent, g.y);
+      max_it (char_cache_descent, int (g.height) - g.y);
     }
 #endif
 
@@ -1437,6 +1442,10 @@ rxvt_font_xft::draw (rxvt_drawable &d, int x, int y,
 
   int w = term->fwidth * len;
   int h = term->fheight;
+  bool overflow = false;
+#if XFT_CHAR_CACHE
+  overflow = char_cache_ascent > ascent || char_cache_descent > h - ascent;
+#endif
 
   // The retained terminal frame already buffers background and glyph drawing.
   bool buffered = bg >= Color_transparent
@@ -1498,6 +1507,7 @@ rxvt_font_xft::draw (rxvt_drawable &d, int x, int y,
               XGlyphInfo extents;
               XftGlyphExtents (disp, f, &glyph, 1, &extents);
               xOff = extents.xOff;
+              overflow |= extents.y > ascent || int (extents.height) - extents.y > h - ascent;
             }
 
           ep->glyph = glyph;
@@ -1593,7 +1603,7 @@ rxvt_font_xft::draw (rxvt_drawable &d, int x, int y,
       // Confine glyph ink to its row: dirty tracking cannot erase pixels
       // spilled into an otherwise unchanged neighbor in the retained frame.
       // Keep the full width for wide glyphs and horizontal overhangs.
-      bool clip_row = ep != enc && d.drawable == term->frame;
+      bool clip_row = overflow && ep != enc && d.drawable == term->frame;
       if (clip_row)
         {
           XRectangle clip = { 0, short (y), (unsigned short)term->vt_width, (unsigned short)h };
