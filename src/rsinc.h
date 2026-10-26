@@ -126,3 +126,7 @@
 #ifdef HAVE_XMU
   def (pointerShape)
 #endif
+#if ENABLE_LUA
+  // Command-line only: selected before loading Lua defaults or X resources.
+  def (lua_config)
+#endif

@@ -2,7 +2,7 @@
  * File:	rxvtlua_neo.cpp - embedded LuaJIT plugin system
  *----------------------------------------------------------------------*
  *
- * Loads $XDG_CONFIG_HOME/nrxvt/init.lua and the *.lua plugins below
+ * Loads a Lua config (-c or $XDG_CONFIG_HOME/nrxvt/init.lua) and plugins in
  * nrxvt/plugins (default ~/.config/nrxvt). Plugins register hook functions
  * called with a terminal object and hook arguments. See doc/lua-plugins.md.
  *
@@ -2602,8 +2602,8 @@ create_state (rxvt_term *term, const char *config, const char *dir, const char *
   cur_term = term;
   config_loading = true;
 
-  if (init && !load_hooks (L, init, "init.lua"))
-    rxvt_fatal ("lua: init.lua failed, aborting.\n");
+  if (init && !load_hooks (L, init, init))
+    rxvt_fatal ("lua: %s failed, aborting.\n", init);
 
   for (char **name = plugins; name && *name; name++)
     {
@@ -2639,17 +2639,26 @@ rxvt_lua_interp::init (rxvt_term *term)
       char config[PATH_MAX], dir[PATH_MAX], init[PATH_MAX];
 
       if (!config_dir (config, sizeof (config))
-          || snprintf (dir, sizeof (dir), "%s/plugins", config) >= (int)sizeof (dir)
-          || snprintf (init, sizeof (init), "%s/init.lua", config) >= (int)sizeof (init))
+          || snprintf (dir, sizeof (dir), "%s/plugins", config) >= (int)sizeof (dir))
         return false;
+
+      // An explicit config is required; only the default file is optional.
+      // Keep plugin and helper-module lookup rooted in the usual directory.
+      const char *init_path = term->rs[Rs_lua_config];
+      if (!init_path || init_path == rxvt_term::resval_undef)
+        {
+          if (snprintf (init, sizeof (init), "%s/init.lua", config) >= (int)sizeof (init))
+            return false;
+
+          init_path = access (init, F_OK) == 0 || errno != ENOENT ? init : 0;
+        }
 
       char **plugins = find_plugins (dir);
-      bool has_init = access (init, F_OK) == 0 || errno != ENOENT;
 
-      if (!plugins && !has_init)
+      if (!plugins && !init_path)
         return false;
 
-      create_state (term, config, dir, has_init ? init : 0, plugins);
+      create_state (term, config, dir, init_path, plugins);
 
       for (char **name = plugins; name && *name; name++)
         free (*name);

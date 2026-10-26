@@ -272,6 +272,9 @@ optList[] = {
               RSTRG (Rs_perl_ext_1, "perl-ext-common", "string"), //, "colon-separated list of perl extensions to enable"),TODO
               STRG (Rs_perl_ext_2, "perl-ext", "pe", "string", "colon-separated list of perl extensions to enable for this instance"),
 #endif
+#if ENABLE_LUA
+              STRG (Rs_lua_config, NULL, "c", "path", "Lua startup configuration file"),
+#endif
 #if ISO_14755
               BOOL (Rs_iso14755, "iso14755", NULL, Opt_iso14755, 0, NULL),
               BOOL (Rs_iso14755_52, "iso14755_52", NULL, Opt_iso14755_52, 0, NULL),

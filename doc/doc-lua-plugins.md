@@ -13,6 +13,11 @@ geometry, visual selection, and the child process are initialized. An
 traceback where available and abort startup rather than silently applying
 an incomplete configuration.
 
+Use `nrxvt -c /path/to/config.lua` to load a different startup file instead.
+Relative paths are resolved from the current working directory. The selected
+file must exist and load successfully; the default `init.lua` is not loaded.
+Plugin and helper-module lookup still uses the usual configuration directory.
+
 The implicit `nrxvt` global provides typed startup options using the
 existing X resource names:
 
