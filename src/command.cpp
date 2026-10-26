@@ -966,6 +966,10 @@ rxvt_term::key_release (XKeyEvent &ev)
 ev_tstamp
 rxvt_term::refresh_delay () const
 {
+  // Interactive responses bypass automatic cadence and output batching.
+  if (input_response)
+    return 0.;
+
   // Honour the configured frame rate as well as the quiet and burst limits.
   ev_tstamp deadline = min (batch_activity + 0.002, batch_started + 0.016);
   return max (ev_tstamp (0), max (deadline, last_present + refresh_interval) - ev::now ());
@@ -977,7 +981,7 @@ rxvt_term::refresh_deferred ()
   if (sync_ev.is_active ())
     return true;
 
-  if (batch_pending && option (Opt_refreshBatching))
+  if (input_response || (batch_pending && option (Opt_refreshBatching)))
     {
       ev_tstamp delay = refresh_delay ();
       if (delay > 0.)
@@ -1078,7 +1082,7 @@ rxvt_term::refresh_check ()
 #endif
   if (pending && !sync_ev.is_active ())
     {
-      if (batch_pending && option (Opt_refreshBatching))
+      if (input_response || (batch_pending && option (Opt_refreshBatching)))
         flush_ev.start (refresh_delay ());
       else if (!flush_ev.is_active ())
         flush_ev.start (refresh_interval);
@@ -1302,10 +1306,19 @@ rxvt_term::pty_cb (ev::io &w, int revents)
 {
   make_current ();
 
+  bool received = false;
   if (revents & ev::READ)
     // loop, but don't allow a single term to monopolize us
     for (int i = CBUFCNT; i-- && pty_fill (); )
-      cmd_parse ();
+      {
+        cmd_parse ();
+        received = true;
+      }
+
+  // Wait for actual output before accelerating a redraw: cursor resets and
+  // scroll-on-keypress can request a frame before the application responds.
+  if (received && want_refresh && input_deadline > ev::now ())
+    input_response = true;
 
   if (revents & ev::WRITE)
     pty_write ();
@@ -4295,6 +4308,11 @@ rxvt_term::tt_write_user_input (const char *data, unsigned int len)
 
   if (option (Opt_scrollTtyKeypress))
     scr_changeview (0);
+
+  // Bound the association so a key with no response cannot accelerate an
+  // unrelated background update much later. Protocol replies use tt_write.
+  if (refresh_rate_auto && len && pty->pty >= 0)
+    input_deadline = ev::now () + 0.150;
 
   tt_write_ (data, len);
 }

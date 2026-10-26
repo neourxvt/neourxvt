@@ -1294,6 +1294,9 @@ struct rxvt_term : zero_initialized, rxvt_vars, rxvt_screen
   // Coalesce legacy output bursts without extending their first deadline.
   bool batch_pending;
   ev_tstamp refresh_interval, last_present, batch_started, batch_activity;
+  // Give one visible PTY response per keypress priority over output batching.
+  ev_tstamp input_deadline = 0.;
+  bool input_response = false;
   ev_tstamp refresh_delay () const;
   bool refresh_deferred ();
   void flush ();

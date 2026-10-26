@@ -2551,6 +2551,11 @@ rxvt_term::scr_refresh () noexcept
 
   // Publish only after glyphs, decorations, cursor and refresh hooks finish.
   batch_pending = false;
+  if (input_response)
+    {
+      input_response = false;
+      input_deadline = 0.;
+    }
   if (frame)
     scr_present (0, 0, frame_width, frame_height);
   // Drawing can block on X11. Start the next frame interval after that work,

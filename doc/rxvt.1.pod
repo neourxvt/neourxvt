@@ -747,6 +747,12 @@ frame rate limit. This can reduce flicker from applications that clear and
 repaint in separate writes without using synchronized output (mode 2026).
 The default is true.
 
+With automatic refresh-rate selection, the first visible PTY response received
+within 150 milliseconds of keyboard input skips batching and the frame-rate
+wait. An explicit C<refreshRate> retains the normal refresh schedule.
+Synchronized output continues to hold presentation until its end marker
+or watchdog expiry.
+
 Synchronized output end markers and watchdog expiry present immediately
 without this additional wait. Batching cannot guarantee complete frames
 when applications pause longer than its waiting period during a repaint.
@@ -758,6 +764,7 @@ By default, use the highest refresh rate currently in use across all active
 displays, updating when the RandR configuration changes. If RandR support
 or usable mode timings are unavailable, fall back to C<60>.
 This controls refresh scheduling, not synchronization with display scanout.
+Keyboard responses can refresh sooner when the rate is selected automatically.
 
 An explicit value overrides monitor detection; C<+fps> ignores a configured
 resource value and restores automatic selection.
