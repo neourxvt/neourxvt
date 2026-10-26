@@ -27,6 +27,7 @@
 
 #include "../config.h"          /* NECESSARY */
 #include "rxvt.h"               /* NECESSARY */
+#include "screen_run_neo.h"
 
 #if ENABLE_PERL
 #include "rxvtperl.h"
@@ -1016,6 +1017,20 @@ rxvt_term::scr_add_lines (const wchar_t *str, int len, int minlines) noexcept
             scr_kill_char (*line, screen.cur.col);
 
           line->touch ();
+
+          // Repeated single-cell text shares width and rendition. Keep runs
+          // within this row and use ordinary insertion for selection/insert
+          // modes, where each character can have additional side effects.
+          if (width == 1 && !checksel && !(screen.flags & Screen_Insert)
+              && str < strend && unicode_t (*str) == c)
+            {
+              int count = screen_run_neo (str, strend, c,
+                                         line->t + screen.cur.col,
+                                         line->r + screen.cur.col,
+                                         rend, ncol - screen.cur.col);
+              str += count;
+              screen.cur.col += count;
+            }
 
           do
             {
