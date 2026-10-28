@@ -2,7 +2,7 @@
 --
 -- * every URL on screen is underlined (also when wrapped over rows)
 -- * Ctrl + left click opens the URL under the pointer with OPENER
--- * SELECT_KEY (M-u) selects URLs from the keyboard: Up/Down or k/j move
+-- * SELECT_KEY (Mod4-Control-g) selects URLs from the keyboard: Up/Down or k/j move
 --   between the URLs on screen, Return/o opens, y copies to the clipboard,
 --   Escape/q quits
 --
@@ -11,7 +11,7 @@
 local api = nrxvt.api
 
 local OPENER = { "xdg-open" }
-local SELECT_KEY = "M-u"
+local SELECT_KEY = "Mod4-Control-g"
 
 -- scheme://rest, only the schemes listed below are considered URLs
 local URL_PATTERN = "%f[%w](%a[%w+.-]*)://[%w%-._~:/?#%[%]@!$&'()*+,;=%%]+"
