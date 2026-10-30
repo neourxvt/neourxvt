@@ -384,7 +384,7 @@ configure_file(output: 'config.h', configuration: cdata)
 config_inc = [include_directories('.'), libev_inc]
 
 subdir('src')
-subdir('doc')
+subdir('docs')
 
 summary({
   'version': '@0@ : @1@'.format(version, date),
