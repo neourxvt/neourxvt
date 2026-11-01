@@ -96,7 +96,7 @@ api.on_init (function (t)
     edge = "left",
     tree = { bg = "background", children = {
       { id = "before", size = { px = 0 } },
-      { id = "handle", size = { px = 0 }, bg = "foreground" },
+      { id = "handle", size = { px = 0 }, bg = 8 },
       { id = "after", size = { px = 0 } },
     } },
   }
