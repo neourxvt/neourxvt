@@ -26,6 +26,7 @@
   - [ ] Refactor/Simplify/Optimize input system (pending proposal)
   - [ ] Refactor/Simplify/Optimize lua pty API (pending proposal)
   - [ ] Consider lua line anchor identities
+  - [ ] Live Init/Config Reload
 
 - LUA EXAMPLES:
 
