@@ -965,7 +965,7 @@ rxvt_term::set_title (const char *str)
 #if ENABLE_LUA
   // lets on_title_change handlers rewrite the title, a flag test without them
   if (SHOULD_INVOKE (HOOK_TITLE_CHANGE))
-    str = rxvt_lua.filter_title (this, str);
+    str = rxvt_lua.filter_name (this, HOOK_TITLE_CHANGE, str);
 #endif
 
   set_mbstring_property (XA_WM_NAME, str);
@@ -977,6 +977,12 @@ rxvt_term::set_title (const char *str)
 void
 rxvt_term::set_icon_name (const char *str)
 {
+#if ENABLE_LUA
+  // lets on_icon_name_change handlers rewrite the name, a flag test without them
+  if (SHOULD_INVOKE (HOOK_ICON_NAME_CHANGE))
+    str = rxvt_lua.filter_name (this, HOOK_ICON_NAME_CHANGE, str);
+#endif
+
   set_mbstring_property (XA_WM_ICON_NAME, str);
 #if ENABLE_EWMH
   set_utf8_property (xa[XA_NET_WM_ICON_NAME], str);

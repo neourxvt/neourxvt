@@ -67,10 +67,11 @@ struct rxvt_lua_interp
   // Calls a prepared bar callback with the same context and error handling
   // as ordinary plugin hooks. Function and arguments are already on L.
   bool call (rxvt_term *term, int nargs, const char *what);
-  // Runs the on_title_change handlers over str. Returns str itself when
-  // every handler passed it through, otherwise the rewritten title, which
-  // stays valid until the next call. Gate calls with SHOULD_INVOKE.
-  const char *filter_title (rxvt_term *term, const char *str);
+  // Runs the handlers of a name filtering hook (HOOK_TITLE_CHANGE or
+  // HOOK_ICON_NAME_CHANGE) over str. Returns str itself when every handler
+  // passed it through, otherwise the rewritten name, which stays valid
+  // until the next call. Gate calls with SHOULD_INVOKE.
+  const char *filter_name (rxvt_term *term, int htype, const char *str);
   // hands the text of a nrxvt.api.selection_fetch request to its lua function
   void selection_finish (rxvt_selection *sel, char *data, unsigned int len);
 };
