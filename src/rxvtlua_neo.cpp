@@ -454,6 +454,24 @@ t_current_screen (lua_State *L)
   return 1;
 }
 
+// nrxvt.api.foreground_pid (t) -> ID of the foreground process group of the
+// terminal (the PID of its leader), or nil before the pty exists or if the
+// system can't tell. One tcgetpgrp call on the pty master, made on demand.
+static int
+t_foreground_pid (lua_State *L)
+{
+  rxvt_term *term = check_term (L);
+  // the pty is only created after on_init
+  pid_t pgrp = term->pty && term->pty->pty >= 0 ? tcgetpgrp (term->pty->pty) : -1;
+
+  if (pgrp > 0)
+    lua_pushinteger (L, pgrp);
+  else
+    lua_pushnil (L);
+
+  return 1;
+}
+
 // nrxvt.api.prompt_marker (t, row [, marked]) -> whether this row is marked.
 // Explicit marking lets plugins support prompts the heuristic cannot see.
 static int
@@ -1584,6 +1602,7 @@ static const luaL_Reg terminal_functions[] = {
   { "top_row",       t_top_row       },
   { "view_start",    t_view_start    },
   { "current_screen", t_current_screen },
+  { "foreground_pid", t_foreground_pid },
   { "prompt_marker", t_prompt_marker },
   { "prompt_markers", t_prompt_markers },
   { "prompt_jump",   t_prompt_jump   },

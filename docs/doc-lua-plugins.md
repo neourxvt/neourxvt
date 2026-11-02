@@ -201,6 +201,7 @@ arguments are listed after `t`. X events (`ev`) are tables with `type`,
 | `nrxvt.api.top_row (t)` | row of the oldest scrollback line |
 | `nrxvt.api.view_start (t [, row])` | first row in the window, scrolls there first if `row` is given |
 | `nrxvt.api.current_screen (t)` | 0 for the primary screen, 1 for the alternate screen; reads urxvt's existing state directly, without polling or system calls |
+| `nrxvt.api.foreground_pid (t)` | ID of the terminal's foreground process group, i.e. the PID of its leader, or `nil` before the program starts; one system call per use, see [Finding the foreground program](#finding-the-foreground-program) |
 | `nrxvt.api.prompt_marker (t, row [, marked])` | whether a row has a prompt marker; pass a boolean to set or clear it |
 | `nrxvt.api.prompt_markers (t)` | table of marked row numbers, oldest first, including visible rows |
 | `nrxvt.api.prompt_jump (t, direction)` | jumps to the previous marker for negative directions, the next for positive directions, or does nothing for zero; returns `view_start`. After the newest marker it returns to the live screen. Navigation does nothing on the alternate screen. |
@@ -343,6 +344,37 @@ nrxvt.api.on_icon_name_change(shorten)
 Without handlers, setting a name costs a flag test. With handlers, the
 name is pushed to Lua once for the whole chain; if the result is equal to
 it, the original C string is used and nothing is copied or retained.
+
+### Finding the foreground program
+
+A pty does not record which process wrote to it, so hooks such as
+`on_title_change` can't tell who sent a sequence. `nrxvt.api.foreground_pid (t)`
+gives the closest approximation: the process group the shell put in the
+foreground, read with `tcgetpgrp` only when called.
+
+```lua
+nrxvt.api.on_title_change(function(t, title)
+	local pid = nrxvt.api.foreground_pid(t)
+	local f = pid and io.open("/proc/" .. pid .. "/comm")
+	if f then
+		local comm = f:read("*l")
+		f:close()
+		return comm .. ": " .. title
+	end
+end)
+```
+
+It names the foreground job, not necessarily the writer:
+
+- background jobs can write too and are attributed to the foreground job
+- output is parsed after it is buffered, so a short-lived program, or a shell
+  changing the title right before running a command, may be missed
+- it needs a shell with job control; otherwise every process shares one
+  group and the result is always the shell
+- for ssh, tmux, screen or mosh it is their client, not the program inside
+- for a pipeline it is the group leader, usually the first command
+- it is `nil` before the program starts, e.g. in `on_init` and for the
+  initial title
 
 ### Detecting alternate-screen applications
 
