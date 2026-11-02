@@ -186,6 +186,7 @@ arguments are listed after `t`. X events (`ev`) are tables with `type`,
 | `on_tt_paste` | data | data pasted into the program, return true to drop it |
 | `on_osc_seq` | op, args | operating system commands, return true to consume |
 | `on_bell` | | |
+| `on_title_change` | title | the window title is about to be set (initially and by OSC 0/2): return a string to replace it, anything else passes it through. Handlers run in load order, each seeing the title returned by the previous ones. |
 | `on_size_change` | width, height | in pixels |
 | `on_sel_make` / `on_sel_grab` | time | a selection was made / is about to be claimed |
 | `on_sel_extend` | | a selection is extended by clicks, return true to suppress it |
@@ -315,6 +316,24 @@ Nodes and the root accept `bg`, `fg`, and `text`. Colors are `"foreground"`, `"b
 During capture, motion/release target the pressed part and retain out-of-bounds coordinates outside the window. A matching button release automatically ends capture after the callback; other buttons do not. Hiding/closing the bar, removing the captured node, unmapping/destroying the terminal, or a handler error cancels capture. A removed ID recreated later has a new identity. A failing callback is reported with a traceback and disabled. Callbacks may submit, hide, or close their own bar.
 
 To enable the example scrollbar, copy or link `scrollbar.lua` into the plugin directory. Configure its thickness, minimum handle height, wheel step, and priority using the constants at the top. It uses terminal foreground/background, hides on the alternate screen or empty history while keeping its strip, and supports left-button handle dragging, page clicks, and three-line wheel steps while hovered. It never enables, disables, or uses the native scrollbar implementation; both can be active.
+
+### Rewriting the window title
+
+`on_title_change` runs for the initial title (`-title` or its default) and
+for every title set by a program. It is a filter rather than an event: returning a string
+replaces the title, while `nil` (or any other non-string value) keeps it.
+Unlike other hooks, returning `true` does not stop later handlers.
+
+```lua
+nrxvt.api.on_title_change(function(t, title)
+	-- shorten "user@host: ~/some/dir" to "~/some/dir"
+	return title:match("^[^@]+@[^:]+: (.*)$")
+end)
+```
+
+Without handlers, setting the title costs a flag test. With handlers, the
+title is pushed to Lua once for the whole chain; if the result is equal to
+it, the original C string is used and nothing is copied or retained.
 
 ### Detecting alternate-screen applications
 

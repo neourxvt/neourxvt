@@ -62,3 +62,5 @@
 
   def (SCREEN_CHANGE)
 
+  def (TITLE_CHANGE) // dispatched by rxvt_lua_interp::filter_title, not HOOK_INVOKE
+

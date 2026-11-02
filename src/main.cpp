@@ -962,6 +962,12 @@ rxvt_term::set_utf8_property (Atom prop, const char *str, int len)
 void
 rxvt_term::set_title (const char *str)
 {
+#if ENABLE_LUA
+  // lets on_title_change handlers rewrite the title, a flag test without them
+  if (SHOULD_INVOKE (HOOK_TITLE_CHANGE))
+    str = rxvt_lua.filter_title (this, str);
+#endif
+
   set_mbstring_property (XA_WM_NAME, str);
 #if ENABLE_EWMH
   set_utf8_property (xa[XA_NET_WM_NAME], str);

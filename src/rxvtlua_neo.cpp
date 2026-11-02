@@ -2725,6 +2725,89 @@ rxvt_lua_interp::call (rxvt_term *term, int nargs, const char *what)
   return ok;
 }
 
+const char *
+rxvt_lua_interp::filter_title (rxvt_term *term, const char *str)
+{
+  // Registry slot pinning the last rewritten title, so the returned pointer
+  // outlives the stack without copying. Reused, it never allocates again.
+  static int title_ref;
+  // Handlers changing the title themselves (e.g. via t_feed) see it unfiltered
+  // rather than recursing.
+  static bool filtering;
+
+  if (!str || !L || filtering || !term->lua.ref || !hook_refs[HOOK_TITLE_CHANGE])
+    return str;
+
+  int base = lua_gettop (L);
+  rxvt_term *prev_term = cur_term;
+  cur_term = term;
+  filtering = true;
+
+  lua_rawgeti (L, LUA_REGISTRYINDEX, hook_refs[HOOK_TITLE_CHANGE]);
+  int handlers = lua_gettop (L);
+  lua_rawgeti (L, LUA_REGISTRYINDEX, term->lua.ref);
+  int self = handlers + 1;
+  lua_pushstring (L, str);
+  int title = handlers + 2;
+
+  // LuaJIT interns strings, so a handler returning an equal title yields
+  // the very same pointer and passes through without being pinned.
+  const char *orig = lua_tostring (L, title);
+  int n = lua_objlen (L, handlers);
+
+  // each handler sees the title as rewritten by the previous ones
+  for (int i = 1; i <= n; i++)
+    {
+      lua_rawgeti (L, handlers, i);
+
+      // handlers that failed before have been disabled
+      if (!lua_isfunction (L, -1))
+        {
+          lua_pop (L, 1);
+          continue;
+        }
+
+      lua_pushvalue (L, self);
+      lua_pushvalue (L, title);
+
+      if (pcall (L, 2, 1, hook_names[HOOK_TITLE_CHANGE]))
+        {
+          // Only actual strings rewrite; lua_isstring would also accept and
+          // convert numbers. Anything else passes the title through.
+          if (lua_type (L, -1) == LUA_TSTRING)
+            lua_replace (L, title);
+          else
+            lua_pop (L, 1);
+        }
+      else
+        {
+          // likely to fail for every title again, so report it only once
+          rxvt_warn ("lua: disabling this %s handler.\n", hook_names[HOOK_TITLE_CHANGE]);
+          lua_pushboolean (L, 0);
+          lua_rawseti (L, handlers, i);
+        }
+    }
+
+  const char *result = lua_tostring (L, title);
+
+  if (result == orig)
+    result = str;
+  else
+    {
+      lua_pushvalue (L, title);
+
+      if (title_ref)
+        lua_rawseti (L, LUA_REGISTRYINDEX, title_ref);
+      else
+        title_ref = luaL_ref (L, LUA_REGISTRYINDEX);
+    }
+
+  lua_settop (L, base);
+  filtering = false;
+  cur_term = prev_term;
+  return result;
+}
+
 bool
 rxvt_lua_interp::invoke (rxvt_term *term, int htype, ...)
 {
