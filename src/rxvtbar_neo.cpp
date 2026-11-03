@@ -81,6 +81,11 @@ static int integer (lua_State *L, int index, int low, int high)
   return int (value);
 }
 
+// Node colors are either terminal palette slots or fixed "#RRGGBB" values.
+// The flag lies above every palette slot, so a node color stays one plain
+// value: comparing two of them detects any change, including RGB edits.
+static const int rgb_color = 1 << 24;
+
 static int color (lua_State *L, int table, const char *name, int fallback)
 {
   field (L, table, name);
@@ -89,9 +94,18 @@ static int color (lua_State *L, int table, const char *name, int fallback)
     {
       const char *s = lua_tostring (L, -1);
       require (lua_objlen (L, -1) == strlen (s), "invalid bar color");
-      require (!strcmp (s, "foreground") || !strcmp (s, "background"),
-               "expected foreground, background, or a palette index");
-      result = !strcmp (s, "foreground") ? Color_fg : Color_bg;
+      if (s[0] == '#')
+        {
+          require (strlen (s) == 7 && strspn (s + 1, "0123456789abcdefABCDEF") == 6,
+                   "bar hex colors must be #RRGGBB");
+          result = rgb_color | int (strtol (s + 1, 0, 16));
+        }
+      else
+        {
+          require (!strcmp (s, "foreground") || !strcmp (s, "background"),
+                   "expected foreground, background, #RRGGBB, or a palette index");
+          result = !strcmp (s, "foreground") ? Color_fg : Color_bg;
+        }
     }
   else if (!lua_isnil (L, -1))
     result = minCOLOR + integer (L, -1, 0, maxTermCOLOR - minCOLOR);
@@ -143,6 +157,12 @@ struct bar
   unsigned int captured_button = 0;
   const XEvent *press = 0;
   uint64_t press_target = 0;
+  // Allocated "#RRGGBB" colors, keyed by their node color value. Entries are
+  // added before a declaration is accepted and dropped once unreferenced.
+  std::unordered_map<int, rxvt_color> rgb;
+  // Font drawing takes palette slots, so RGB text is drawn through a copy of
+  // the terminal palette with the text color appended after its last slot.
+  std::vector<rxvt_color> palette;
 
   bar (rxvt_bar_manager *manager, int edge, int thickness, int priority, bool shown)
   : manager (manager), term (manager->term), edge (edge), thickness (thickness),
@@ -165,7 +185,17 @@ struct bar
   void mark (const bar_node &n) { mark (n.lo, n.hi); }
   void full () { mark (0, length ()); }
   int parse (lua_State *L, int table, int parent, int depth);
+  void alloc_colors ();
   void accept ();
+  void prune_colors ();
+  void free_colors ();
+  Pixel pixel (int c) const
+  {
+    if (!(c & rgb_color)) return term->pix_colors[c];
+    auto found = rgb.find (c);
+    // Accepted nodes always have an entry; this only guards invariants.
+    return found != rgb.end () ? Pixel (found->second) : Pixel (term->pix_colors[Color_bg]);
+  }
   void layout (int id, bool changed);
   void ensure_layout ();
   void prepare_text (bar_node &n);
@@ -285,6 +315,48 @@ int bar::parse (lua_State *L, int table, int parent, int depth)
     }
   lua_pop (L, 1);
   return id;
+}
+
+// Runs between parsing and acceptance, so a failed allocation rejects the
+// whole declaration. Colors allocated before the failure are pruned later.
+void bar::alloc_colors ()
+{
+  bool any = false;
+  for (size_t id = 0; id < used; ++id)
+    for (int c : {scratch[id].bg, scratch[id].fg})
+      {
+        if (!(c & rgb_color)) continue;
+        any = true;
+        if (rgb.count (c)) continue;
+        // Expand 8-bit channels to X's 16-bit range (0xff -> 0xffff).
+        rgba value (((c >> 16) & 0xff) * 0x101, ((c >> 8) & 0xff) * 0x101, (c & 0xff) * 0x101);
+        rxvt_color allocated;
+        require (allocated.set (term, value), "bar color allocation failed");
+        rgb.emplace (c, allocated);
+      }
+  // Reserve here, where allocation failure is reported to Lua, so painting
+  // RGB text never allocates.
+  if (any) palette.reserve (TOTAL_COLORS + 1);
+}
+
+// Frees allocations no accepted node references any more.
+void bar::prune_colors ()
+{
+  if (rgb.empty ()) return;
+  std::vector<int> live;
+  for (const bar_node &n : nodes)
+    for (int c : {n.bg, n.fg})
+      if (c & rgb_color) live.push_back (c);
+  for (auto i = rgb.begin (); i != rgb.end (); )
+    if (std::find (live.begin (), live.end (), i->first) == live.end ())
+      { i->second.free (term); i = rgb.erase (i); }
+    else ++i;
+}
+
+void bar::free_colors ()
+{
+  for (auto &entry : rgb) entry.second.free (term);
+  rgb.clear ();
 }
 
 void bar::accept ()
@@ -439,7 +511,7 @@ void bar::render_node (int id, int lo, int hi)
   lo = max (lo, n.lo); hi = min (hi, n.hi);
   if (hi <= lo) return;
   clip (lo, hi);
-  XSetForeground (term->dpy, gc, term->pix_colors[n.bg]);
+  XSetForeground (term->dpy, gc, pixel (n.bg));
   XFillRectangle (term->dpy, pixmap, gc, vertical () ? 0 : lo, vertical () ? lo : 0,
                   vertical () ? width : hi - lo, vertical () ? hi - lo : height);
   if (!n.text.empty ())
@@ -457,6 +529,19 @@ void bar::render_node (int id, int lo, int hi)
       int last = int (clamp ((int64_t (right) - px) / term->fwidth + 2, int64_t (0), int64_t (n.cells.size ())));
       while (first && first < int (n.cells.size ()) && n.cells[first] == NOCHAR) --first;
       while (last < int (n.cells.size ()) && n.cells[last] == NOCHAR) ++last;
+      // Fonts read term->pix_colors[fg] (and Color_bg on some paths), so an
+      // RGB foreground swaps in a full palette copy with it in an extra slot.
+      int fg = n.fg;
+      rxvt_color *saved_colors = term->pix_colors;
+      auto found = (fg & rgb_color) ? rgb.find (fg) : rgb.end ();
+      if (found != rgb.end ())
+        {
+          palette.assign (saved_colors, saved_colors + TOTAL_COLORS);
+          palette.push_back (found->second);
+          term->pix_colors = palette.data ();
+          fg = TOTAL_COLORS;
+        }
+      else if (fg & rgb_color) fg = Color_fg; // Unreachable for accepted nodes.
       if (py >= -32768 && py <= 32767)
         for (int i = first; i < last; )
           {
@@ -465,9 +550,10 @@ void bar::render_node (int id, int lo, int hi)
             // -2 suppresses font background clearing: this node's rectangle
             // is already filled, including when the terminal uses an image.
             term->fontset[0]->operator [] (n.fonts[i])->draw (*drawable, int (px + int64_t (i) * term->fwidth),
-                                                          int (py), n.cells.data () + i, end - i, n.fg, -2);
+                                                          int (py), n.cells.data () + i, end - i, fg, -2);
             i = end;
           }
+      term->pix_colors = saved_colors;
     }
   // Child clips are ordered disjoint intervals. Binary search skips siblings
   // before the damaged span, and recursion never visits unrelated subtrees.
@@ -624,6 +710,7 @@ void bar::close ()
       XFreeCursor (term->dpy, cursor);
       XDestroyWindow (term->dpy, window);
     }
+  free_colors ();
   lua_State *L = rxvt_lua.L;
   if (callback > 0) luaL_unref (L, LUA_REGISTRYINDEX, callback);
   if (self_ref > 0) luaL_unref (L, LUA_REGISTRYINDEX, self_ref);
@@ -652,7 +739,10 @@ static int submit (lua_State *L)
       b->used = 0;
       for (auto &entry : b->scratch_index) entry.second = -1;
       b->parse (L, 2, -1, 0);
+      b->alloc_colors ();
       b->accept ();
+      // accept can run a cancel callback that closes the bar and its colors.
+      if (b->term) b->prune_colors ();
       return 0;
     }
   catch (const char *message) { lua_settop (L, 2); lua_pushstring (L, message); }

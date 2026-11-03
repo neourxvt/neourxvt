@@ -85,6 +85,13 @@ nrxvt.api.on_osc_seq(function (t, op, args)
     t.test_tree.children[3].bg = 2
     t.test_bars.top:submit(t.test_tree)
     reply(t, "ok")
+  elseif cmd == "hex" then
+    -- Mixed-case RGB on a rectangle and its text. Switching variants changes
+    -- only the RGB value, which must still be detected as a change.
+    local last = t.test_tree.children[3]
+    last.bg, last.fg = name == "a" and "#FF00ff" or "#123456", "#00ff00"
+    t.test_bars.top:submit(t.test_tree)
+    reply(t, "ok")
   elseif cmd == "hide" or cmd == "show" then
     b:visible(cmd == "show"); reply(t, "ok")
   elseif cmd == "close" then b:close(); b:close(); reply(t, "ok")
@@ -106,6 +113,9 @@ nrxvt.api.on_osc_seq(function (t, op, args)
       {children={{id="utf8",size={px=1},text="\255"}}},
       {children={{id="field",size={px=1},unknown=true}}},
       {children={{id="newline",size={px=1},text="a\nb"}}},
+      {children={{id="short_hex",size={px=1},bg="#12345"}}},
+      {children={{id="long_hex",size={px=1},fg="#1234567"}}},
+      {children={{id="bad_hex",size={px=1},bg="#12345g"}}},
     }
     for _, tree in ipairs(bad) do assert(not pcall(t.test_bars.top.submit,t.test_bars.top,tree)) end
     t.test_bars.top:submit(t.test_tree)
@@ -310,6 +320,11 @@ def check_scene(t):
     copies = t.events("copy")
     assert any(int(e[3]) == 0 and int(e[5]) >= 4 for e in copies), copies
     assert any(int(e[3]) > 0 for e in copies), copies
+    # RGB-only edits repaint like palette edits; overflow later drops the
+    # RGB nodes and restore allocates their colors again.
+    for variant in ("a", "b"):
+        t.idle(); t.command("hex " + variant); time.sleep(.04)
+        assert t.events("copy"), (variant, t.events())
     for operation in ("overflow", "restore", "move"):
         t.command(operation); time.sleep(.03)
     assert t.process.poll() is None
