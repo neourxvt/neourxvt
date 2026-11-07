@@ -5,17 +5,23 @@
 --   Website: http://www.github.com/muennich/urxvt-perls
 --   License: GPLv2
 --
--- ACTIVATE_KEY (M-Escape) starts the selection mode at the cursor, the
--- program is paused until it ends. SEARCH_KEY (unset by default) starts it
--- with a backward search. Then:
+-- ACTIVATE_KEY (M-Escape) starts the selection mode at the cursor, or if the
+-- view is scrolled back at its first row (at the top of the scrollback) or
+-- in its middle. The program is paused until it ends. SEARCH_KEY (unset by
+-- default) starts it with a backward search. Then:
 --
 --   h/j/k/l, arrows    move the cursor left/down/up/right
 --   0 ^ $ Home End     start, first non-blank, end of the line
 --   w W b B e E        word motions
 --   f F ; ,            jump to a character, repeat forwards/backwards
+--   Tab                jump to the position where the mode was left the last
+--                      time (it follows its text as lines are added to the
+--                      scrollback)
 --   g G H M L          top/bottom of the scrollback, top/middle/bottom of
 --                      the window
 --   C-f C-b C-d C-u    scroll a page/half a page down/up
+--                      The cursor stays in the window, SCROLLOFF rows away
+--                      from its edges, also when scrolling with the mouse
 --   / ?                search forward/backward (case-insensitive unless the
 --                      text contains upper case letters), n/N repeat,
 --                      C-S-v in the search prompt pastes the clipboard
@@ -23,14 +29,26 @@
 --                      to the start/end, Left Right by a character, C-u
 --                      clears the text before the cursor, C-w removes the
 --                      word before it
+--   P p                search forward for the text of PRIMARY/the CLIPBOARD,
+--                      as if pasted into the prompt of /
 --   v V C-v            toggle normal/linewise/blockwise selection
+--   o O                while selecting: move the cursor to the other end of
+--                      the selection, O only to the other side in blockwise
+--                      mode
+--   iw aw iW aW        while selecting: select the word (or WORD) around the
+--                      cursor, without/with the whitespace next to it,
+--                      repeating extends the selection by the next word
 --   y Return           copy the selection, Return quits afterwards
 --   Y                  copy the selected lines, or the cursor line and quit
---   q Escape C-c       quit
+--   Escape             end the selection (v V C-v), or quit if there is none
+--   q C-c              quit
 --
--- The selection goes to PRIMARY, and to the CLIPBOARD as well if the
--- NRxvt.keyboard-select.clipboard resource is true. Keysym resources of
--- the perl extension keep working, e.g.
+-- Where the text goes is set by YANK_TARGET. With "clipboard", selecting text
+-- puts it into PRIMARY right away, and y/Return also into the CLIPBOARD.
+-- With "primary", y/Return only copy it to PRIMARY, unless the
+-- NRxvt.keyboard-select.clipboard resource is true (which makes it copy to
+-- the CLIPBOARD as well). Keysym resources of the perl extension keep
+-- working, e.g.
 --
 --   NRxvt.keysym.M-Escape: perl:keyboard-select:activate
 --   NRxvt.keysym.M-s:      perl:keyboard-select:search
@@ -42,6 +60,13 @@ local api = nrxvt.api
 local ACTIVATE_KEY = "M-Escape"
 -- e.g. "M-s", which search.lua uses as well
 local SEARCH_KEY = nil
+-- like vim's scrolloff: the number of rows kept between the cursor and the
+-- top/bottom of the window, as long as there is more scrollback to show
+local SCROLLOFF = 3
+-- "clipboard": the selected text is put into PRIMARY while selecting (like
+-- selecting with the mouse does) and y copies it to the CLIPBOARD (and
+-- PRIMARY); "primary": y copies it to PRIMARY only
+local YANK_TARGET = "clipboard"
 
 -- character classes for the word motions, like \s, \w and the rest in the
 -- regular expressions of the perl version
@@ -191,17 +216,38 @@ local function status_area (t, ks, extra)
   ks.overlay:show ()
 end
 
--- keeps the cursor in the window, the perl version does this on every
--- refresh, here the cursor only moves on key presses
+-- SCROLLOFF, but small enough to leave a row for the cursor
+local function scrolloff (nrow)
+  return math.min (SCROLLOFF, math.floor ((nrow - 1) / 2))
+end
+
+-- the first and last row the cursor may be at without the view having to
+-- scroll, there is no margin where the view can't scroll any further
+local function cursor_range (t)
+  local view, nrow, top = api.view_start (t), api.nrow (t), api.top_row (t)
+  local so = scrolloff (nrow)
+
+  return view == top and view or view + so,
+         view == 0 and view + nrow - 1 or view + nrow - 1 - so
+end
+
+-- keeps the cursor in the window (and SCROLLOFF rows away from its edges) by
+-- scrolling the view, the perl version does this on every refresh, here it
+-- is done after key presses
 local function show_cursor (t)
   local row = api.cursor (t)
-  local view, nrow = api.view_start (t), api.nrow (t)
+  local view, nrow, top = api.view_start (t), api.nrow (t), api.top_row (t)
+  local so = scrolloff (nrow)
+  local new = view
 
-  if row < view then
-    api.view_start (t, row)
-  elseif row >= view + nrow then
-    api.view_start (t, row - nrow + 1)
+  if row < view + so then
+    new = row - so
+  elseif row > view + nrow - 1 - so then
+    new = row - nrow + 1 + so
   end
+
+  new = math.max (top, math.min (0, new))
+  if new ~= view then api.view_start (t, new) end
 end
 
 -- selection
@@ -257,7 +303,7 @@ local function clear_selection (t)
 end
 
 -- copies the selection to PRIMARY (and CLIPBOARD)
-local function copy (t, ks, time)
+local function copy (t, ks, time, clipboard)
   local br, bc, er, ec = calc_span (t, ks)
   if ks.select == "l" then ec = line (t, er).l end
 
@@ -266,12 +312,29 @@ local function copy (t, ks, time)
   api.selection_make (t, ks.select == "b", time)
 
   local text = api.selection (t)
-  if ks.clipboard and text then
+  if clipboard and text then
     api.set_selection (t, text, true)
   end
 end
 
+-- puts the selected text into PRIMARY, without leaving the selection of the
+-- terminal (the highlight is drawn by the mode itself)
+local function sync_primary (t, ks, time)
+  if not ks.live_primary or ks.select == "" then return end
+
+  copy (t, ks, time, false)
+  clear_selection (t)
+end
+
 -- cursor movement
+
+-- puts the cursor on the logical line of row, as close to the column it
+-- wants to be at (ks.offset, or the end of the line) as possible
+local function put_cursor (t, ks, row)
+  local ln = line (t, row)
+  local offset = (ks.dollar > 0 or ks.offset >= ln.l) and ln.l - 1 or ks.offset
+  api.cursor (t, ln:coord_of (offset))
+end
 
 local function move_cursor (t, ks, key)
   local cr, cc = api.cursor (t)
@@ -299,9 +362,11 @@ local function move_cursor (t, ks, key)
     local amount = (key == "d" or key == "u") and math.floor (nrow / 2) or nrow - 1
     if key == "b" or key == "u" then amount = -amount end
 
-    -- move the cursor as far as the window could be scrolled
+    -- move the cursor as far as the window could be scrolled, but keep it
+    -- out of the SCROLLOFF margins of the new view
     local new = api.view_start (t, math.max (top, math.min (0, view + amount)))
-    cr = math.max (top, math.min (nrow - 1, cr + new - view))
+    local first, last = cursor_range (t)
+    cr = math.max (first, math.min (last, cr + new - view))
   elseif key == "g" then
     cr, ks.offset, ks.dollar = top, 0, 0
   elseif key == "G" then
@@ -316,16 +381,15 @@ local function move_cursor (t, ks, key)
     ks.dollar = ln:offset_of (cr, cc) + 1
     ks.offset = ln.l - 1
   elseif key == "H" then
-    cr = api.view_start (t)
+    cr = cursor_range (t)
   elseif key == "M" then
     cr = api.view_start (t) + math.floor (nrow / 2)
   elseif key == "L" then
-    cr = api.view_start (t) + nrow - 1
+    local _, last = cursor_range (t)
+    cr = last
   end
 
-  ln = line (t, cr)
-  local offset = (ks.dollar > 0 or ks.offset >= ln.l) and ln.l - 1 or ks.offset
-  api.cursor (t, ln:coord_of (offset))
+  put_cursor (t, ks, cr)
 
   status_area (t, ks)
 end
@@ -423,6 +487,78 @@ local function move_to (t, ks, key)
   end
 end
 
+-- text objects
+
+-- the first and last offset of the run of equal character classes around i,
+-- for WORDs every non-space character is of the same class
+local function run_bounds (classes, i, l, big)
+  local function class (j)
+    local c = classes[j + 1]
+    return (big and c ~= SPACE) and WORD or c
+  end
+
+  local c = class (i)
+  local s, e = i, i
+  while s > 0 and class (s - 1) == c do s = s - 1 end
+  while e < l - 1 and class (e + 1) == c do e = e + 1 end
+  return s, e, c
+end
+
+-- selects the word around the cursor like vim's iw/aw (kind is "i" or "a"),
+-- or extends the selection by the next word if more than a character is
+-- selected; only within the logical line of the cursor
+local function text_object (t, ks, kind, big)
+  local cr, cc = api.cursor (t)
+  local ln = line (t, cr)
+  if ln.l == 0 then return end
+
+  local classes, l = ln:classes (), ln.l
+  local pos = math.min (ln:offset_of (cr, cc), l - 1)
+  local single = ks.ar == cr and ks.ac == cc
+  local backward = not single and (cr < ks.ar or (cr == ks.ar and cc < ks.ac))
+  local s, e, c
+
+  -- the run to start with: the cursor's, or the one next to it
+  local from = single and pos or (backward and pos - 1 or pos + 1)
+  if from < 0 or from >= l then return end
+  s, e, c = run_bounds (classes, from, l, big)
+
+  if kind == "a" then
+    -- plus the whitespace after the word, the whitespace before it if there
+    -- is none after (or at the other side when extending backwards), or the
+    -- word after the whitespace
+    local function whitespace_after ()
+      if e + 1 < l then
+        local _, e2, c2 = run_bounds (classes, e + 1, l, big)
+        if c2 == SPACE or c == SPACE then e = e2 return true end
+      end
+    end
+    local function whitespace_before ()
+      if s > 0 then
+        local s2, _, c2 = run_bounds (classes, s - 1, l, big)
+        if c2 == SPACE or c == SPACE then s = s2 return true end
+      end
+    end
+
+    if backward then
+      whitespace_before ()
+    elseif not whitespace_after () and single then
+      whitespace_before ()
+    end
+  end
+
+  if ks.select == "l" then toggle_select (t, ks, "n") end
+
+  ks.dollar = 0
+  if single then
+    ks.ar, ks.ac = ln:coord_of (s)
+  end
+
+  local target = backward and s or e
+  ks.offset = target
+  api.cursor (t, ln:coord_of (target))
+end
+
 -- search
 
 -- the search text as literal pattern, case-insensitive unless it contains
@@ -506,7 +642,9 @@ local function activate (t, search)
     search = "", search_dir = 1, search_mode = false,
     -- the number of bytes of ks.search before the prompt's cursor
     search_cur = 0,
-    clipboard = api.resource_boolean (t, "keyboard-select.clipboard"),
+    clipboard = YANK_TARGET == "clipboard" or api.resource_boolean (t, "keyboard-select.clipboard"),
+    -- the selected text is put into PRIMARY as the selection changes
+    live_primary = YANK_TARGET == "clipboard",
     -- the selection is drawn like urxvt does it
     hl_sel = api.resource (t, "highlightColor") ~= nil,
   }
@@ -517,13 +655,24 @@ local function activate (t, search)
   end
 
   ks.oldcr, ks.oldcc = api.cursor (t)
-  ks.srhcr, ks.srhcc = ks.oldcr, ks.oldcc
-  ks.old_view_start = api.view_start (t)
   -- the program is paused, so the cursor can move freely
   ks.old_pty_events = api.pty_events (t, api.EV_NONE)
 
-  local ln = line (t, ks.oldcr)
-  ks.offset = ln:offset_of (ks.oldcr, ks.oldcc)
+  -- the program's cursor is out of the window when scrolled back, so the
+  -- view is not scrolled to it: at the bottom of the scrollbuffer the cursor
+  -- starts at the one of the program, at the top at the first row, anywhere
+  -- else in the middle of the window
+  local view, nrow = api.view_start (t), api.nrow (t)
+  if view ~= 0 then
+    local first, last = cursor_range (t)
+    local row = view == api.top_row (t) and view or view + math.floor (nrow / 2)
+    api.cursor (t, math.max (first, math.min (last, row)), 0)
+  end
+  ks.srhcr, ks.srhcc = api.cursor (t)
+
+  local cr, cc = api.cursor (t)
+  local ln = line (t, cr)
+  ks.offset = ln:offset_of (cr, cc)
 
   clear_selection (t)
   t.keyboard_select = ks
@@ -538,6 +687,26 @@ local function activate (t, search)
   api.refresh (t)
 end
 
+-- moves the cursor to the position where the mode was left the last time,
+-- scrolling the view there, with the row in the middle, if it is out of the
+-- window
+local function goto_remembered (t, ks)
+  local mem = t.keyboard_select_last
+  if not mem then return end
+
+  local view, nrow, top = api.view_start (t), api.nrow (t), api.top_row (t)
+  local row = math.max (top, math.min (nrow - 1, mem.row))
+
+  if row < view or row >= view + nrow then
+    api.view_start (t, math.max (top, math.min (0, row - math.floor (nrow / 2))))
+  end
+
+  local first, last = cursor_range (t)
+  ks.offset, ks.dollar = mem.offset, mem.dollar
+  put_cursor (t, ks, math.max (first, math.min (last, row)))
+  status_area (t, ks)
+end
+
 local function deactivate (t)
   local ks = t.keyboard_select
 
@@ -545,8 +714,10 @@ local function deactivate (t)
   if ks.overlay then ks.overlay:close () end
 
   t.keyboard_select = nil
+  -- remembered for the next time the mode is entered
+  t.keyboard_select_last = { row = api.cursor (t), offset = ks.offset, dollar = ks.dollar }
+  -- the view is left where it is, only the cursor goes back to where it was
   api.cursor (t, ks.oldcr, ks.oldcc)
-  api.view_start (t, ks.old_view_start)
   api.pty_events (t, ks.old_pty_events)
   api.refresh (t)
 end
@@ -661,6 +832,15 @@ local function key_press (t, ks, ev, keysym, str)
     deactivate (t)
   elseif ks.search ~= "" then
     search_key (t, ks, ev, key, char, enter)
+  elseif ks.textobj then
+    -- typing the capital W presses Shift first, which is no key to cancel with
+    if keysym >= 0xffe1 and keysym <= 0xffee then return end
+
+    -- the second key of iw/aw/iW/aW, anything else cancels
+    local kind = ks.textobj
+    ks.textobj = nil
+    if key == "w" or key == "W" then text_object (t, ks, kind, key == "W") end
+    status_area (t, ks)
   elseif ks.move_to then
     if key == "Escape" then
       ks.move_to = false
@@ -671,6 +851,11 @@ local function key_press (t, ks, ev, keysym, str)
       move_to (t, ks, ";")
       status_area (t, ks)
     end
+  elseif key == "Escape" and ks.select ~= "" then
+    -- like vim, this only ends the visual mode
+    clear_selection (t)
+    ks.select = ""
+    status_area (t, ks)
   elseif key == "Escape" or lower == "q" then
     deactivate (t)
   elseif lower == "y" or enter then
@@ -682,7 +867,7 @@ local function key_press (t, ks, ev, keysym, str)
     end
 
     if ks.select ~= "" then
-      copy (t, ks, ev.time)
+      copy (t, ks, ev.time, ks.clipboard)
 
       if lower == "y" then
         clear_selection (t)
@@ -706,12 +891,34 @@ local function key_press (t, ks, ev, keysym, str)
     move_cursor (t, ks, "h")
   elseif key == "l" or key == "Right" then
     move_cursor (t, ks, "l")
+  elseif key == "Tab" then
+    goto_remembered (t, ks)
   elseif key == "End" then
     move_cursor (t, ks, "$")
   elseif key == "Home" then
     move_cursor (t, ks, "^")
   elseif CURSOR_KEYS[key] or (ctrl and SCROLL_KEYS[key]) then
     move_cursor (t, ks, key)
+  elseif (key == "o" or key == "O") and ks.select ~= "" then
+    -- the cursor goes to the other end of the selection and back again, O
+    -- only changes the side in blockwise mode
+    local cr, cc = api.cursor (t)
+    local ar, ac = ks.ar, ks.ac
+    local cln, aln = line (t, cr), line (t, ar)
+    local co, ao = cln:offset_of (cr, cc), aln:offset_of (ar, ac)
+
+    if key == "O" and ks.select == "b" then
+      -- the rows stay, the columns (offsets in the lines) are exchanged
+      ks.ar, ks.ac = aln:coord_of (math.min (co, math.max (aln.l - 1, 0)))
+      api.cursor (t, cln:coord_of (math.min (ao, math.max (cln.l - 1, 0))))
+    else
+      ks.ar, ks.ac = cr, cc
+      api.cursor (t, ar, ac)
+    end
+    ks.offset, ks.dollar = ao, 0
+  elseif (key == "i" or key == "a") and ks.select ~= "" then
+    ks.textobj = key
+    status_area (t, ks, key)
   elseif lower == "f" then
     ks.move_to = true
     ks.move_dir = key == "F" and -1 or 1
@@ -724,11 +931,23 @@ local function key_press (t, ks, ev, keysym, str)
     ks.search_dir = key == "?" and -1 or 1
     ks.srhcr, ks.srhcc = api.cursor (t)
     status_area (t, ks)
+  elseif key == "P" or key == "p" then
+    -- a forward search for the text of PRIMARY (P) or the CLIPBOARD (p),
+    -- which is typed as if it had been pasted into the prompt of /
+    ks.search = "/"
+    ks.search_cur = 1
+    ks.search_dir = 1
+    ks.srhcr, ks.srhcc = api.cursor (t)
+    status_area (t, ks)
+    api.selection_fetch (t, key == "p", function (text) search_paste (t, ks, text) end, ev.time)
   elseif lower == "n" then
     find_next (t, ks, ks.search_dir * (key == "N" and -1 or 1))
   end
 
-  if t.keyboard_select then show_cursor (t) end
+  if t.keyboard_select then
+    show_cursor (t)
+    sync_primary (t, ks, ev.time)
+  end
   api.refresh (t)
 end
 
@@ -775,6 +994,37 @@ end)
 -- wait for the pty would also resume its output
 api.on_tt_write (function (t)
   return t.keyboard_select ~= nil
+end)
+
+-- the remembered position moves along with the text that is scrolled into
+-- the scrollback, if the text is discarded it stays at the oldest line
+api.on_scroll_back (function (t, lines, top_row)
+  local mem = t.keyboard_select_last
+  if not mem then return end
+
+  mem.row = math.max (top_row, mem.row - lines)
+end)
+
+-- another screen has different text, which is not the one remembered
+api.on_screen_change (function (t) t.keyboard_select_last = nil end)
+api.on_reset (function (t) t.keyboard_select_last = nil end)
+
+-- when the view is scrolled by other means than our keys, e.g. the mouse
+-- wheel or scrollbar, the cursor follows into the window and the scroll
+-- position in the status area is kept up to date
+api.on_view_change (function (t)
+  local ks = t.keyboard_select
+  if not ks then return end
+
+  local row = api.cursor (t)
+  local first, last = cursor_range (t)
+  if row < first or row > last then
+    put_cursor (t, ks, math.max (first, math.min (last, row)))
+    sync_primary (t, ks)
+  end
+
+  -- a pending f/F is shown in front of the position
+  status_area (t, ks, ks.textobj or (ks.move_to and (ks.move_dir == -1 and "F" or "f") or nil))
 end)
 
 -- draws the selection, the highlight is undone after the refresh
