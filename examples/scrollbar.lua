@@ -1,7 +1,7 @@
 -- A reserved scrollbar anchored toward the nearest horizontal monitor edge.
 local api = nrxvt.api
 
-local THICKNESS = 4
+local THICKNESS = 3
 local MIN_HANDLE = 20
 local WHEEL_LINES = 3
 local PRIORITY = 0
