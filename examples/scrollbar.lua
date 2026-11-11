@@ -2,72 +2,26 @@
 local api = nrxvt.api
 
 local THICKNESS = 3
--- Thickness while the pointer hovers over the bar or drags its handle.
-local HOVER_THICKNESS = 8
--- Seconds for growing to HOVER_THICKNESS or shrinking back, in 1px steps.
-local HOVER_DURATION = 0.8
 local MIN_HANDLE = 20
 local WHEEL_LINES = 3
 local PRIORITY = 0
 
-local floor, min, max, abs = math.floor, math.min, math.max, math.abs
+local floor, min, max = math.floor, math.min, math.max
 
 local function round(n) return floor(n + 0.5) end
 local function clamp(n, low, high) return max(low, min(high, n)) end
-
--- Whether there is anything to scroll, independent of the bar's geometry,
--- which stays empty for a replaced bar until the deferred geometry pass.
-local function scrollable(t)
-  return api.current_screen(t) == 0 and api.top_row(t) < 0
-end
-
--- Moves the thickness one pixel toward its target, ending the animation
--- once it is reached. The thickness is a reservation, so the text area
--- follows on the next frame and may gain or lose a column.
-local function step(t)
-  local s = t.lua_scrollbar
-  local current = s.bar:thickness()
-  if current ~= s.target then
-    current = current + (s.target > current and 1 or -1)
-    s.bar:thickness(current)
-  end
-  if current == s.target and s.animating then
-    s.animating = false
-    s.timer:stop()
-  end
-end
-
--- Hovered or dragged bars widen; a bar with nothing to scroll stays thin.
--- A new target only redirects a running animation, so reversing midway
--- continues from the current thickness at the same pace.
-local function fit(t)
-  local s = t.lua_scrollbar
-  local grown = scrollable(t) and (s.grab ~= nil or s.bar:hovered())
-  s.target = grown and HOVER_THICKNESS or THICKNESS
-  if s.animating or s.bar:thickness() == s.target then return end
-  -- The first step is immediate and the last lands after HOVER_DURATION.
-  local steps = abs(HOVER_THICKNESS - THICKNESS)
-  if steps <= 1 then s.bar:thickness(s.target); return end
-  local interval = HOVER_DURATION / (steps - 1)
-  s.animating = true
-  if s.timer then s.timer:start(interval, interval)
-  else s.timer = api.timer(interval, function () step(t) end, interval) end
-  step(t)
-end
 
 local function sync(t)
   local s = t.lua_scrollbar
   if not s then return end
   local _, _, _, length = s.bar:geometry()
   local history, rows = max(0, -api.top_row(t)), api.nrow(t)
-  local shown = scrollable(t) and length > 0
+  local shown = api.current_screen(t) == 0 and history > 0 and length > 0
   s.bar:visible(shown)
   if not shown then
     s.grab = nil
-    fit(t)
     return
   end
-  fit(t)
 
   local handle = min(length, max(MIN_HANDLE, round(length * rows / (rows + history))))
   local travel = length - handle
@@ -86,9 +40,8 @@ end
 
 local function input(t, bar, ev)
   local s = t.lua_scrollbar
-  if ev.type == "cancel" then s.grab = nil; fit(t); return end
-  -- Hover changes reach fit through sync.
-  if ev.type == "resize" or ev.type == "enter" or ev.type == "leave" then sync(t); return end
+  if ev.type == "cancel" then s.grab = nil; return end
+  if ev.type == "resize" then sync(t); return end
   -- Use current history and track geometry if output/resize arrived before
   -- the next scheduled frame; dragging never uses a stale scroll range.
   sync(t)
@@ -113,13 +66,11 @@ local function input(t, bar, ev)
   elseif ev.type == "button_release" and ev.button == 1 then
     s.grab = nil
     bar:release()
-    -- A drag ending outside the bar has already reported its leave.
-    fit(t)
   end
 end
 
-local function new_bar(t, edge, thickness)
-  return api.new_bar(t, { edge = edge, thickness = thickness, priority = PRIORITY,
+local function new_bar(t, edge)
+  return api.new_bar(t, { edge = edge, thickness = THICKNESS, priority = PRIORITY,
                      visible = false, on_event = input })
 end
 
@@ -133,12 +84,9 @@ local function anchor(t)
   local edge = 2 * x + width > 2 * monitor_x + monitor_width and "right" or "left"
   if edge == s.edge then return end
   -- Edge reservations are immutable. Replace the bar before the deferred
-  -- geometry pass; keeping its current thickness leaves the total reserved
-  -- width and text grid unchanged. A pointer already over the new bar is
-  -- reported by an enter event once it is mapped.
-  local thickness = s.bar:thickness()
+  -- geometry pass, keeping the total reserved width and text grid unchanged.
   s.bar:close()
-  s.edge, s.bar = edge, new_bar(t, edge, thickness)
+  s.edge, s.bar = edge, new_bar(t, edge)
   s.last_start, s.last_handle, s.last_length = nil, nil, nil
   sync(t)
 end
@@ -153,13 +101,7 @@ api.on_init (function (t)
     } },
   }
   t.lua_scrollbar = s
-  s.bar = new_bar(t, s.edge, THICKNESS)
-end)
-
--- A running animation must not touch the bar of a destroyed terminal.
-api.on_destroy (function (t)
-  local s = t.lua_scrollbar
-  if s and s.timer then s.timer:stop() end
+  s.bar = new_bar(t, s.edge)
 end)
 
 -- Placement queries run on window events, never on the output refresh path.
