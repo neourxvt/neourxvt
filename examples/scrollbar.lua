@@ -4,11 +4,13 @@ local api = nrxvt.api
 local THICKNESS = 3
 -- Thickness while the pointer hovers over the bar or drags its handle.
 local HOVER_THICKNESS = 8
+-- Seconds for growing to HOVER_THICKNESS or shrinking back, in 1px steps.
+local HOVER_DURATION = 0.8
 local MIN_HANDLE = 20
 local WHEEL_LINES = 3
 local PRIORITY = 0
 
-local floor, min, max = math.floor, math.min, math.max
+local floor, min, max, abs = math.floor, math.min, math.max, math.abs
 
 local function round(n) return floor(n + 0.5) end
 local function clamp(n, low, high) return max(low, min(high, n)) end
@@ -19,13 +21,38 @@ local function scrollable(t)
   return api.current_screen(t) == 0 and api.top_row(t) < 0
 end
 
+-- Moves the thickness one pixel toward its target, ending the animation
+-- once it is reached. The thickness is a reservation, so the text area
+-- follows on the next frame and may gain or lose a column.
+local function step(t)
+  local s = t.lua_scrollbar
+  local current = s.bar:thickness()
+  if current ~= s.target then
+    current = current + (s.target > current and 1 or -1)
+    s.bar:thickness(current)
+  end
+  if current == s.target and s.animating then
+    s.animating = false
+    s.timer:stop()
+  end
+end
+
 -- Hovered or dragged bars widen; a bar with nothing to scroll stays thin.
--- The thickness is a reservation, so the text area follows on the next
--- frame and may gain or lose a column. Unchanged values are no-ops.
+-- A new target only redirects a running animation, so reversing midway
+-- continues from the current thickness at the same pace.
 local function fit(t)
   local s = t.lua_scrollbar
   local grown = scrollable(t) and (s.grab ~= nil or s.bar:hovered())
-  s.bar:thickness(grown and HOVER_THICKNESS or THICKNESS)
+  s.target = grown and HOVER_THICKNESS or THICKNESS
+  if s.animating or s.bar:thickness() == s.target then return end
+  -- The first step is immediate and the last lands after HOVER_DURATION.
+  local steps = abs(HOVER_THICKNESS - THICKNESS)
+  if steps <= 1 then s.bar:thickness(s.target); return end
+  local interval = HOVER_DURATION / (steps - 1)
+  s.animating = true
+  if s.timer then s.timer:start(interval, interval)
+  else s.timer = api.timer(interval, function () step(t) end, interval) end
+  step(t)
 end
 
 local function sync(t)
@@ -127,6 +154,12 @@ api.on_init (function (t)
   }
   t.lua_scrollbar = s
   s.bar = new_bar(t, s.edge, THICKNESS)
+end)
+
+-- A running animation must not touch the bar of a destroyed terminal.
+api.on_destroy (function (t)
+  local s = t.lua_scrollbar
+  if s and s.timer then s.timer:stop() end
 end)
 
 -- Placement queries run on window events, never on the output refresh path.
