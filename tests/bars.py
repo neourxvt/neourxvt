@@ -448,6 +448,8 @@ def check_scene(t):
 
 
 def check_scrollbar(t):
+    # Earlier terminals leave the pointer where this bar would grow under it.
+    t.x11.motion(700, 500)
     assert t.command("scrollbar").split()[1] == "false"
     initial = t.x11.geometry(t.vt)
     window = next(int(e[2]) for e in t.events("window") if int(e[5]) == 3)
@@ -478,6 +480,15 @@ def check_scrollbar(t):
     assert handles()[-1][3] == 20
     t.idle(); t.send(b"more\r\n"); time.sleep(.04)
     assert not any(int(e[2]) == window for e in t.events("copy")), "unchanged handle repainted"
+    # Hovering widens the bar and moves the text area; leaving restores both.
+    def width():
+        return int(t.command("scrollbar").split()[4])
+    t.x11.motion(2, y + 10)
+    wait_for(lambda: width() == 8)
+    wait_for(lambda: t.x11.geometry(t.vt)[0] == initial[0] + 5)
+    t.x11.motion(100, y + 10)
+    wait_for(lambda: width() == 3)
+    wait_for(lambda: t.x11.geometry(t.vt) == initial)
     t.send(b"\x1b[?1003h\x1b[?1006h")
     t.x11.motion(2, y + 2)
     t.x11.button(4, True); t.x11.button(4, False)
@@ -490,7 +501,10 @@ def check_scrollbar(t):
     wait_for(lambda: t.state()[3] == t.state()[2])
     t.x11.motion(60, y + length + 50)
     wait_for(lambda: t.state()[3] == 0)
+    # A drag keeps the bar wide outside it until the button is released.
+    assert width() == 8
     t.x11.button(1, False)
+    wait_for(lambda: width() == 3)
     t.drain()
     assert b"\x1b[<" not in t.received, t.received
     t.send(b"\x1b[?1049h")

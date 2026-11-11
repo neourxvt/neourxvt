@@ -2,14 +2,8 @@
 local api = nrxvt.api
 
 local THICKNESS = 3
--- Thickness while the pointer hovers over the bar. A handle drag keeps
--- the current thickness until the button is released.
+-- Thickness while the pointer hovers over the bar or drags its handle.
 local HOVER_THICKNESS = 8
--- Bars get pointer motion only while a button is held, so hovering is
--- detected on the text area instead: within this many pixels of the bar's
--- side of the text area counts as hovering. Keep it above the thickness
--- difference so the text shifting away after growing stays inside it.
-local HOVER_ZONE = 12
 local MIN_HANDLE = 20
 local WHEEL_LINES = 3
 local PRIORITY = 0
@@ -25,6 +19,15 @@ local function scrollable(t)
   return api.current_screen(t) == 0 and api.top_row(t) < 0
 end
 
+-- Hovered or dragged bars widen; a bar with nothing to scroll stays thin.
+-- The thickness is a reservation, so the text area follows on the next
+-- frame and may gain or lose a column. Unchanged values are no-ops.
+local function fit(t)
+  local s = t.lua_scrollbar
+  local grown = scrollable(t) and (s.grab ~= nil or s.bar:hovered())
+  s.bar:thickness(grown and HOVER_THICKNESS or THICKNESS)
+end
+
 local function sync(t)
   local s = t.lua_scrollbar
   if not s then return end
@@ -34,8 +37,10 @@ local function sync(t)
   s.bar:visible(shown)
   if not shown then
     s.grab = nil
+    fit(t)
     return
   end
+  fit(t)
 
   local handle = min(length, max(MIN_HANDLE, round(length * rows / (rows + history))))
   local travel = length - handle
@@ -54,8 +59,9 @@ end
 
 local function input(t, bar, ev)
   local s = t.lua_scrollbar
-  if ev.type == "cancel" then s.grab = nil; return end
-  if ev.type == "resize" then sync(t); return end
+  if ev.type == "cancel" then s.grab = nil; fit(t); return end
+  -- Hover changes reach fit through sync.
+  if ev.type == "resize" or ev.type == "enter" or ev.type == "leave" then sync(t); return end
   -- Use current history and track geometry if output/resize arrived before
   -- the next scheduled frame; dragging never uses a stale scroll range.
   sync(t)
@@ -80,35 +86,14 @@ local function input(t, bar, ev)
   elseif ev.type == "button_release" and ev.button == 1 then
     s.grab = nil
     bar:release()
+    -- A drag ending outside the bar has already reported its leave.
+    fit(t)
   end
 end
 
 local function new_bar(t, edge, thickness)
   return api.new_bar(t, { edge = edge, thickness = thickness, priority = PRIORITY,
                      visible = false, on_event = input })
-end
-
--- Edge and thickness are immutable bar reservations, so changing either
--- replaces the bar before the deferred geometry pass. The next sync submits
--- the complete tree to the new bar.
-local function replace(t, edge, thickness)
-  local s = t.lua_scrollbar
-  s.bar:close()
-  s.edge, s.thickness, s.bar = edge, thickness, new_bar(t, edge, thickness)
-  s.last_start, s.last_handle, s.last_length = nil, nil, nil
-  sync(t)
-end
-
--- Grows or shrinks the bar. A different thickness changes the reservation,
--- so the text area shifts by the difference and may lose or gain a column.
-local function hover(t, hovered)
-  local s = t.lua_scrollbar
-  -- Replacing a captured bar would cancel an active handle drag.
-  if not s or s.grab then return end
-  -- A bar without history to show never grows. Its visibility is not used:
-  -- a freshly replaced bar stays hidden until its geometry is known.
-  local thickness = hovered and scrollable(t) and HOVER_THICKNESS or THICKNESS
-  if thickness ~= s.thickness then replace(t, s.edge, thickness) end
 end
 
 local function anchor(t)
@@ -120,15 +105,20 @@ local function anchor(t)
   -- not bias placement. Centered and full-width windows keep the left bar.
   local edge = 2 * x + width > 2 * monitor_x + monitor_width and "right" or "left"
   if edge == s.edge then return end
-  -- Keeping the current thickness leaves the total reserved width and the
-  -- text grid unchanged.
-  replace(t, edge, s.thickness)
+  -- Edge reservations are immutable. Replace the bar before the deferred
+  -- geometry pass; keeping its current thickness leaves the total reserved
+  -- width and text grid unchanged. A pointer already over the new bar is
+  -- reported by an enter event once it is mapped.
+  local thickness = s.bar:thickness()
+  s.bar:close()
+  s.edge, s.bar = edge, new_bar(t, edge, thickness)
+  s.last_start, s.last_handle, s.last_length = nil, nil, nil
+  sync(t)
 end
 
 api.on_init (function (t)
   local s = {
     edge = "left",
-    thickness = THICKNESS,
     tree = { bg = "background", children = {
       { id = "before", size = { px = 0 } },
       { id = "handle", size = { px = 0 }, bg = 8 },
@@ -136,25 +126,8 @@ api.on_init (function (t)
     } },
   }
   t.lua_scrollbar = s
-  s.bar = new_bar(t, s.edge, s.thickness)
+  s.bar = new_bar(t, s.edge, THICKNESS)
 end)
-
--- Text-area motion in pixels from the bar's side; the text window spans
--- exactly the character grid. Motion over the bar itself is not reported,
--- so the bar keeps its size until the pointer is back over the text.
-api.on_motion_notify (function (t, ev)
-  local s = t.lua_scrollbar
-  if not s then return end
-  local distance = ev.x
-  if s.edge == "right" then
-    local width = api.ncol(t) * (api.font_size(t))
-    distance = width - 1 - ev.x
-  end
-  hover(t, distance < HOVER_ZONE)
-end)
-
--- Leaving the primary screen hides the bar; release its extra width too.
-api.on_screen_change (function (t) hover(t, false) end)
 
 -- Placement queries run on window events, never on the output refresh path.
 -- Property changes include i3 updating its frame extents after border changes.
