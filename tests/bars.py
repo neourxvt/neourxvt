@@ -204,7 +204,7 @@ class Terminal:
         plugins.mkdir(parents=True)
         (plugins / "control.lua").write_text(CONTROLLER)
         if scrollbar:
-            (plugins / "scrollbar.lua").symlink_to(Path(__file__).resolve().parent.parent / "src/lua/scrollbar.lua")
+            (plugins / "scrollbar.lua").symlink_to(Path(__file__).resolve().parent.parent / "examples/scrollbar.lua")
         self.trace = directory / "trace"
         self.errors = tempfile.TemporaryFile()
         self.master, self.slave = pty.openpty()
@@ -380,14 +380,15 @@ def check_scene(t):
 def check_scrollbar(t):
     assert t.command("scrollbar").split()[1] == "false"
     initial = t.x11.geometry(t.vt)
-    window = next(int(e[2]) for e in t.events("window") if int(e[5]) == 4)
+    window = next(int(e[2]) for e in t.events("window") if int(e[5]) == 3)
     pixmap = next(int(e[2]) for e in t.events("pixmap") if int(e[1]) == window)
     def handles():
         colors, fills = {}, []
         for e in t.events():
             if e[0] == "foreground":
                 colors[e[1]] = int(e[2])
-            elif e[0] == "fill" and int(e[1]) == pixmap and colors.get(e[6]) == 0xffffff:
+            # The handle is the only fill differing from the black background.
+            elif e[0] == "fill" and int(e[1]) == pixmap and colors.get(e[6], 0) != 0:
                 fills.append(tuple(map(int, e[2:6])))
         return fills
     t.send(b"line\r\n" * 12)
@@ -396,13 +397,13 @@ def check_scrollbar(t):
     _, _, oldest, view, _ = t.state()
     length = initial[3]
     handle = min(length, max(20, int(length * 8 / (8 - oldest) + .5)))
-    assert handles()[-1] == (0, length - handle, 4, handle), handles()
+    assert handles()[-1] == (0, length - handle, 3, handle), handles()
     assert handle > 20
     t.send(b"line\r\n" * 40)
     wait_for(lambda: t.state()[2] < -20)
     assert t.command("scrollbar").split()[1] == "true"
     _, y, width, length = map(int, t.command("scrollbar").split()[2:])
-    assert width == 4 and length > 20
+    assert width == 3 and length > 20
     time.sleep(.04)
     assert handles()[-1][3] == 20
     t.idle(); t.send(b"more\r\n"); time.sleep(.04)
