@@ -2,6 +2,14 @@
 local api = nrxvt.api
 
 local THICKNESS = 3
+-- Thickness while the pointer hovers over the bar. A handle drag keeps
+-- the current thickness until the button is released.
+local HOVER_THICKNESS = 8
+-- Bars get pointer motion only while a button is held, so hovering is
+-- detected on the text area instead: within this many pixels of the bar's
+-- side of the text area counts as hovering. Keep it above the thickness
+-- difference so the text shifting away after growing stays inside it.
+local HOVER_ZONE = 12
 local MIN_HANDLE = 20
 local WHEEL_LINES = 3
 local PRIORITY = 0
@@ -11,12 +19,18 @@ local floor, min, max = math.floor, math.min, math.max
 local function round(n) return floor(n + 0.5) end
 local function clamp(n, low, high) return max(low, min(high, n)) end
 
+-- Whether there is anything to scroll, independent of the bar's geometry,
+-- which stays empty for a replaced bar until the deferred geometry pass.
+local function scrollable(t)
+  return api.current_screen(t) == 0 and api.top_row(t) < 0
+end
+
 local function sync(t)
   local s = t.lua_scrollbar
   if not s then return end
   local _, _, _, length = s.bar:geometry()
   local history, rows = max(0, -api.top_row(t)), api.nrow(t)
-  local shown = api.current_screen(t) == 0 and history > 0 and length > 0
+  local shown = scrollable(t) and length > 0
   s.bar:visible(shown)
   if not shown then
     s.grab = nil
@@ -69,9 +83,32 @@ local function input(t, bar, ev)
   end
 end
 
-local function new_bar(t, edge)
-  return api.new_bar(t, { edge = edge, thickness = THICKNESS, priority = PRIORITY,
+local function new_bar(t, edge, thickness)
+  return api.new_bar(t, { edge = edge, thickness = thickness, priority = PRIORITY,
                      visible = false, on_event = input })
+end
+
+-- Edge and thickness are immutable bar reservations, so changing either
+-- replaces the bar before the deferred geometry pass. The next sync submits
+-- the complete tree to the new bar.
+local function replace(t, edge, thickness)
+  local s = t.lua_scrollbar
+  s.bar:close()
+  s.edge, s.thickness, s.bar = edge, thickness, new_bar(t, edge, thickness)
+  s.last_start, s.last_handle, s.last_length = nil, nil, nil
+  sync(t)
+end
+
+-- Grows or shrinks the bar. A different thickness changes the reservation,
+-- so the text area shifts by the difference and may lose or gain a column.
+local function hover(t, hovered)
+  local s = t.lua_scrollbar
+  -- Replacing a captured bar would cancel an active handle drag.
+  if not s or s.grab then return end
+  -- A bar without history to show never grows. Its visibility is not used:
+  -- a freshly replaced bar stays hidden until its geometry is known.
+  local thickness = hovered and scrollable(t) and HOVER_THICKNESS or THICKNESS
+  if thickness ~= s.thickness then replace(t, s.edge, thickness) end
 end
 
 local function anchor(t)
@@ -83,17 +120,15 @@ local function anchor(t)
   -- not bias placement. Centered and full-width windows keep the left bar.
   local edge = 2 * x + width > 2 * monitor_x + monitor_width and "right" or "left"
   if edge == s.edge then return end
-  -- Edge reservations are immutable. Replace the bar before the deferred
-  -- geometry pass, keeping the total reserved width and text grid unchanged.
-  s.bar:close()
-  s.edge, s.bar = edge, new_bar(t, edge)
-  s.last_start, s.last_handle, s.last_length = nil, nil, nil
-  sync(t)
+  -- Keeping the current thickness leaves the total reserved width and the
+  -- text grid unchanged.
+  replace(t, edge, s.thickness)
 end
 
 api.on_init (function (t)
   local s = {
     edge = "left",
+    thickness = THICKNESS,
     tree = { bg = "background", children = {
       { id = "before", size = { px = 0 } },
       { id = "handle", size = { px = 0 }, bg = 8 },
@@ -101,8 +136,25 @@ api.on_init (function (t)
     } },
   }
   t.lua_scrollbar = s
-  s.bar = new_bar(t, s.edge)
+  s.bar = new_bar(t, s.edge, s.thickness)
 end)
+
+-- Text-area motion in pixels from the bar's side; the text window spans
+-- exactly the character grid. Motion over the bar itself is not reported,
+-- so the bar keeps its size until the pointer is back over the text.
+api.on_motion_notify (function (t, ev)
+  local s = t.lua_scrollbar
+  if not s then return end
+  local distance = ev.x
+  if s.edge == "right" then
+    local width = api.ncol(t) * (api.font_size(t))
+    distance = width - 1 - ev.x
+  end
+  hover(t, distance < HOVER_ZONE)
+end)
+
+-- Leaving the primary screen hides the bar; release its extra width too.
+api.on_screen_change (function (t) hover(t, false) end)
 
 -- Placement queries run on window events, never on the output refresh path.
 -- Property changes include i3 updating its frame extents after border changes.
