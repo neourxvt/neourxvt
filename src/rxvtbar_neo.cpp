@@ -81,6 +81,13 @@ static int integer (lua_State *L, int index, int low, int high)
   return int (value);
 }
 
+// Total reservations, the internal border on both sides and one cell must
+// fit X11's signed 16-bit window geometry.
+static int reservation_limit (rxvt_term *term)
+{
+  return 32767 - 2 * term->int_bwidth - max (term->fwidth, term->fheight);
+}
+
 // Node colors are either terminal palette slots or fixed "#RRGGBB" values.
 // The flag lies above every palette slot, so a node color stays one plain
 // value: comparing two of them detects any change, including RGB edits.
@@ -139,6 +146,9 @@ struct bar
   rxvt_term *term;
   int edge, thickness, priority, self_ref = 0, callback = 0;
   bool shown, surface_changed = true, resize_event = false, retained_valid = false;
+  // Whether the pointer is inside the bar window, tracked from crossing
+  // events independently of visibility.
+  bool hovered = false;
   int x = 0, y = 0, width = 0, height = 0, surface_w = 0, surface_h = 0;
   Window window = 0;
   Pixmap pixmap = 0;
@@ -205,6 +215,8 @@ struct bar
   void surface ();
   int hit (int position) const;
   void event (const char *type, int target, const XEvent *ev = 0, const char *reason = 0);
+  void hover (bool inside, const XEvent *ev = 0);
+  void resize (int value);
   void cancel (const char *reason);
   void close ();
 };
@@ -606,6 +618,8 @@ void bar::surface ()
     {
       if (window) XUnmapWindow (term->dpy, window);
       cancel ("unmapped");
+      // An unmapped window gets no LeaveNotify; end the hover explicitly.
+      if (term) hover (false);
       return;
     }
   if (!window)
@@ -614,7 +628,8 @@ void bar::surface ()
                                     term->pix_colors[Color_fg], term->pix_colors[Color_bg]);
       cursor = XCreateFontCursor (term->dpy, XC_left_ptr);
       XDefineCursor (term->dpy, window, cursor);
-      XSelectInput (term->dpy, window, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
+      XSelectInput (term->dpy, window, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask
+                                       | EnterWindowMask | LeaveWindowMask);
       watcher.set<rxvt_bar_manager, &rxvt_bar_manager::x_cb> (manager);
       watcher.start (term->display, window);
       gc = XCreateGC (term->dpy, window, 0, 0);
@@ -664,15 +679,19 @@ void bar::event (const char *type, int target, const XEvent *ev, const char *rea
   if (reason) { lua_pushstring (L, reason); lua_setfield (L, -2, "reason"); }
   if (ev)
     {
+      // Motion, button and crossing events share the leading coordinate
+      // fields, but crossing events keep the modifier state elsewhere.
       const XMotionEvent &m = ev->xmotion;
+      bool crossing = ev->type == EnterNotify || ev->type == LeaveNotify;
+      unsigned int state = crossing ? ev->xcrossing.state : m.state;
       BAR_INT ("x", m.x); BAR_INT ("y", m.y);
       BAR_INT ("local_x", m.x - (vertical () ? 0 : nodes[target].start));
       BAR_INT ("local_y", m.y - (vertical () ? nodes[target].start : 0));
       BAR_INT ("x_root", m.x_root); BAR_INT ("y_root", m.y_root);
-      BAR_INT ("time", m.time); BAR_INT ("state", m.state);
-      BAR_BOOL ("shift", m.state & ShiftMask); BAR_BOOL ("ctrl", m.state & ControlMask);
-      BAR_BOOL ("meta", m.state & term->ModMetaMask);
-      if (ev->type != MotionNotify) BAR_INT ("button", ev->xbutton.button);
+      BAR_INT ("time", m.time); BAR_INT ("state", state);
+      BAR_BOOL ("shift", state & ShiftMask); BAR_BOOL ("ctrl", state & ControlMask);
+      BAR_BOOL ("meta", state & term->ModMetaMask);
+      if (ev->type == ButtonPress || ev->type == ButtonRelease) BAR_INT ("button", ev->xbutton.button);
     }
   BAR_INT ("width", width); BAR_INT ("height", height);
 #undef BAR_INT
@@ -685,6 +704,34 @@ void bar::event (const char *type, int target, const XEvent *ev, const char *rea
       callback = 0;
       cancel ("error");
     }
+}
+
+// Crossing events collapse into one hover state, so grabs, ungrabs and
+// geometry changes under the pointer never report a transition twice.
+void bar::hover (bool inside, const XEvent *ev)
+{
+  if (hovered == inside) return;
+  hovered = inside;
+  // Only an enter names the part under the pointer; a leave position is
+  // outside the bar, where hit testing would name an unrelated part.
+  int target = 0;
+  if (ev && inside)
+    {
+      ensure_layout ();
+      target = hit (vertical () ? ev->xcrossing.y : ev->xcrossing.x);
+    }
+  event (inside ? "enter" : "leave", target, ev);
+}
+
+// Like creation and closure, a new thickness takes effect in the deferred
+// geometry pass: the outer window keeps its size and the text grid adapts.
+void bar::resize (int value)
+{
+  if (value == thickness) return;
+  manager->s->insets[edge] += value - thickness;
+  thickness = value;
+  manager->geometry_dirty = true;
+  wake ();
 }
 
 void bar::cancel (const char *reason)
@@ -715,6 +762,7 @@ void bar::close ()
   if (callback > 0) luaL_unref (L, LUA_REGISTRYINDEX, callback);
   if (self_ref > 0) luaL_unref (L, LUA_REGISTRYINDEX, self_ref);
   callback = self_ref = 0;
+  hovered = false;
   term = 0;
   manager->geometry_dirty = true;
   manager->s->order_dirty = true;
@@ -795,7 +843,8 @@ static int capture (lua_State *L)
           for (size_t i = 0; i < b->nodes.size (); ++i)
             if (b->nodes[i].identity == b->press_target) { target = i; break; }
           if (b->term && b->shown && target >= 0)
-            ok = XGrabPointer (b->term->dpy, b->window, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+            ok = XGrabPointer (b->term->dpy, b->window, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask
+                                                                | EnterWindowMask | LeaveWindowMask,
                                GrabModeAsync, GrabModeAsync, None, None, ev.time) == GrabSuccess;
           if (ok)
             {
@@ -809,6 +858,38 @@ static int capture (lua_State *L)
 }
 
 static int release (lua_State *L) { check_bar (L)->cancel (0); return 0; }
+
+static int hovered (lua_State *L)
+{
+  lua_pushboolean (L, check_bar (L)->hovered);
+  return 1;
+}
+
+static int thickness (lua_State *L)
+{
+  bar *b = check_bar (L);
+  if (!lua_isnoneornil (L, 2))
+    {
+      // Validate before changing anything; raise outside the C++ handler.
+      const char *error = 0;
+      try
+        {
+          int value = integer (L, 2, 1, 32767);
+          int sum = value - b->thickness;
+          for (int i = 0; i < 4; ++i) sum += b->manager->inset (i);
+          require (sum <= reservation_limit (b->term), "bar reservations exceed X11 geometry limits");
+          b->resize (value);
+        }
+      catch (const char *message) { error = message; }
+      if (error)
+        {
+          lua_pushstring (L, error);
+          return lua_error (L);
+        }
+    }
+  lua_pushinteger (L, b->thickness);
+  return 1;
+}
 
 static int close (lua_State *L)
 {
@@ -980,6 +1061,8 @@ void rxvt_bar_manager::x_cb (XEvent &ev)
                        ev.xexpose.x, ev.xexpose.y, w, h, ev.xexpose.x, ev.xexpose.y);
           else b->full ();
         }
+      else if (ev.type == EnterNotify || ev.type == LeaveNotify)
+        b->hover (ev.type == EnterNotify, &ev);
       else if (b->shown && (ev.type == ButtonPress || ev.type == ButtonRelease || ev.type == MotionNotify))
         {
           b->ensure_layout ();
@@ -1033,7 +1116,7 @@ int rxvt_bar_new (lua_State *L)
       require (!manager->s->shutting_down, "terminal bars are being destroyed");
       int sum = thickness;
       for (int i = 0; i < 4; ++i) sum += manager->inset (i);
-      require (sum <= 32767 - 2 * term->int_bwidth - max (term->fwidth, term->fheight), "bar reservations exceed X11 geometry limits");
+      require (sum <= reservation_limit (term), "bar reservations exceed X11 geometry limits");
       auto *handle = (bar_handle *)lua_newuserdata (L, sizeof (bar_handle));
       new (handle) bar_handle;
       luaL_getmetatable (L, "nrxvt.bar"); lua_setmetatable (L, -2);
@@ -1059,7 +1142,8 @@ void rxvt_bar_register (lua_State *L)
 {
   static const luaL_Reg methods[] = {
     {"submit", submit}, {"visible", visible}, {"geometry", geometry},
-    {"capture", capture}, {"release", release}, {"close", close}, {0, 0}
+    {"capture", capture}, {"release", release}, {"close", close},
+    {"hovered", hovered}, {"thickness", thickness}, {0, 0}
   };
   luaL_newmetatable (L, "nrxvt.bar");
   lua_newtable (L); luaL_register (L, 0, methods); lua_setfield (L, -2, "__index");

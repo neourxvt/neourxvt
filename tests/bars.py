@@ -99,6 +99,20 @@ nrxvt.api.on_osc_seq(function (t, op, args)
     t.test_bars.dynamic = nrxvt.api.new_bar(t, {edge="left", thickness=4, priority=10})
     reply(t, "ok")
   elseif cmd == "action" then t.bar_action = name; reply(t, "ok")
+  elseif cmd == "hovered" then reply(t, "hovered " .. tostring(b:hovered()))
+  elseif cmd == "thickness" then
+    local bar_name, value = name:match("^(%S+)%s*(%d*)$")
+    b = t.test_bars[bar_name]
+    if value ~= "" then b:thickness(tonumber(value)) end
+    reply(t, "thickness " .. b:thickness())
+  elseif cmd == "badthickness" then
+    -- Every rejected value must leave the reservation unchanged.
+    local before = b:thickness()
+    for _, value in ipairs{0, -1, 1.5, 32768, 32767, "x", 0/0} do
+      assert(not pcall(b.thickness, b, value))
+    end
+    assert(b:thickness() == before)
+    reply(t, "ok")
   elseif cmd == "scrollbar" then
     local s=t.lua_scrollbar
     reply(t, "scrollbar " .. tostring(s.bar:visible()) .. " " .. table.concat({s.bar:geometry()}, " "))
@@ -210,6 +224,7 @@ class Terminal:
         self.master, self.slave = pty.openpty()
         tty.setraw(self.slave)
         self.received = b""
+        self.crossed = []
         self.process = subprocess.Popen([binary, "-pty-fd", str(self.master), "-geometry", "20x8",
             "-fn", font, "-sl", "1000", "-fg", "#ffffff", "-bg", "#000000",
             "-sb" if native else "+sb", "+bc",
@@ -241,13 +256,18 @@ class Terminal:
     def drain(self):
         while select.select([self.slave], [], [], 0)[0]:
             self.received += os.read(self.slave, 65536)
+        # Commands clear the received buffer, so complete crossing lines are
+        # moved to their own list where later checks can still see them.
+        *lines, rest = self.received.split(b"\n")
+        self.crossed.extend(l.decode().split() for l in lines if l.startswith((b"BAR:event enter", b"BAR:event leave")))
+        self.received = b"".join(l + b"\n" for l in lines if not l.startswith((b"BAR:event enter", b"BAR:event leave"))) + rest
 
     def command(self, text, prefix=None):
         self.drain()
         self.received = b""
         self.send(b"\x1b]777;" + text.encode() + b"\x07")
         expected = ("BAR:" + (prefix or text.split()[0])).encode()
-        if text.split()[0] not in ("state", "geometry", "scrollbar", "benchmark") and prefix is None:
+        if text.split()[0] not in ("state", "geometry", "scrollbar", "benchmark", "hovered", "thickness") and prefix is None:
             expected = b"BAR:ok"
         def got():
             self.drain()
@@ -335,6 +355,56 @@ def check_scene(t):
     assert t.x11.geometry(t.vt)[0] == before[0] + 4
     t.command("close dynamic"); time.sleep(.04)
     assert t.x11.geometry(t.parent)[2:] == outer_size and t.x11.geometry(t.vt)[0] == before[0]
+
+    # Crossing events: one enter naming the part under the pointer, one leave,
+    # regardless of visibility, and queryable hover state.
+    crossed = t.crossed
+    def crossings():
+        t.drain()
+        return crossed
+    t.x11.motion(700, 500); time.sleep(.03); crossings(); crossed.clear()
+    t.x11.motion(6, 4); t.x11.motion(8, 5)
+    wait_for(lambda: crossings())
+    # "move" above emptied the group, so it is the deepest part there.
+    assert crossings() == [["BAR:event", "enter", "group", "6", "4"]], crossings()
+    assert t.command("hovered top").split()[1] == "true"
+    t.x11.motion(700, 500)
+    wait_for(lambda: len(crossings()) == 2)
+    assert crossings()[1][:3] == ["BAR:event", "leave", "root"], crossings()
+    assert t.command("hovered top").split()[1] == "false"
+    t.command("hide top"); crossings(); crossed.clear()
+    t.x11.motion(6, 4)
+    wait_for(lambda: crossings())
+    t.x11.motion(700, 500)
+    wait_for(lambda: len(crossings()) == 2)
+    t.command("show top")
+
+    # A captured drag leaving the bar reports a single leave, even though
+    # releasing the grab outside generates another crossing.
+    t.command("action capture"); crossings(); crossed.clear()
+    t.x11.motion(6, 4); t.x11.button(1, True); time.sleep(.02)
+    t.x11.motion(700, 500); time.sleep(.02)
+    t.x11.button(1, False); time.sleep(.05)
+    assert [c[1] for c in crossings()] == ["enter", "leave"], crossings()
+    t.command("action none")
+
+    # Runtime thickness keeps the outer window and moves the text area; a
+    # bar growing under a resting pointer reports the crossing.
+    vt = t.x11.geometry(t.vt)
+    assert t.command("thickness top").split()[1] == "24"
+    t.command("badthickness top")
+    t.x11.motion(60, vt[1] + 3); time.sleep(.03); crossings(); crossed.clear()
+    assert t.command("thickness top 30").split()[1] == "30"
+    wait_for(lambda: t.geometry("top")[3] == 30)
+    wait_for(lambda: t.x11.geometry(t.vt)[1] == vt[1] + 6)
+    assert t.x11.geometry(t.parent)[2:] == outer_size
+    assert t.geometry("left_outer")[1] == 30 and t.geometry("right")[1] == 30
+    wait_for(lambda: [c[1] for c in crossings()] == ["enter"])
+    t.command("thickness top 24")
+    wait_for(lambda: t.x11.geometry(t.vt) == vt)
+    wait_for(lambda: [c[1] for c in crossings()] == ["enter", "leave"])
+    assert t.geometry("top")[3] == 24 and t.state()[:2] == (20, 8)
+    t.x11.motion(700, 500); time.sleep(.02)
 
     # Hit testing must follow nested ratio boundaries, independent of font.
     width = top[2]
