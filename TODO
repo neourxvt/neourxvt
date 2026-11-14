@@ -27,6 +27,7 @@
   - [ ] Refactor/Simplify/Optimize lua pty API (pending proposal)
   - [ ] Consider lua line anchor identities
   - [ ] Live Init/Config Reload
+  - [ ] Expose lua plugin states so other lua plugins can use each other or read each other
 
 - LUA EXAMPLES:
 
